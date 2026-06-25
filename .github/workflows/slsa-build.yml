@@ -1,0 +1,57 @@
+name: SLSA Hardened Build
+on: [workflow_dispatch]
+
+# FIX 1: Top-level permissions for consistent OIDC token access
+permissions:
+  id-token: write
+  packages: write
+  contents: read
+
+jobs:
+  build:
+    outputs:
+      image: ${{ steps.build.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6.0.3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4.2.0
+        with:
+          registry: ghcr.io
+          # Using repository_owner for consistency
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push
+        id: build
+        run: |
+          # FIX 2: Force lowercase to match OIDC identity to registry path
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMG="ghcr.io/$REPO_LOWER"
+          
+          docker build -t "$IMG:latest" .
+          
+          # FIX 3: Robust digest capture directly from the registry push
+          docker push "$IMG:latest"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMG:latest" | cut -d'@' -f2)
+          
+          echo "image=$IMG" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+  provenance:
+    needs: [build]
+    permissions:
+      actions: read
+      id-token: write
+      packages: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
+    with:
+      image: ${{ needs.build.outputs.image }}
+      digest: ${{ needs.build.outputs.digest }}
+      # FIX 4: Hardcoding the owner to ensure 'registry-username' is never empty
+      registry-username: ${{ github.repository_owner }}
+    secrets:
+      registry-password: ${{ secrets.GITHUB_TOKEN }}
